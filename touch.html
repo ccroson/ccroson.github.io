@@ -1,0 +1,271 @@
+<!DOCTYPE html>
+<html>
+  <head>
+	<title>Touch Synth</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no, minimum-scale=1, maximum-scale=1">
+	<meta name="apple-mobile-web-app-capable" content="yes">
+	<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+	<style type="text/css">
+		body { margin: 0px; overflow: hidden; }
+		canvas { border: 1px solid black; }
+	</style>
+	<script type="text/javascript">
+
+	//	Touch Synth - a web-based synthesizer for multitouch devices
+	//	Uses the WebAudio API, which is currently supported by Mobile Safari and Chrome for Android
+	//	Originally released April 2013, as my final for the course Music Through Technology
+	// Update 9/14/14 - updated for newer browser support. Works on desktops, too!
+
+
+	var canvas;
+	var ctx;
+	var w = 0;
+	var h = 0;
+
+	var timer;
+	var updateStarted = false;
+	var touches = [];
+	var color = ['0,0,200', '0,200,0', '200,0,0', '200,200,0'];
+	
+	var audio_context, oscillator = [], gain = [], convolver, delay, LFO, LFO_gain, filter, feedback;
+	var root_freq = 440;
+	var tones=[0,2,4,7,9,12,14,16,19,21,24];
+	var stepCount = tones.length - 1;
+	var portamento = false;
+	var impulse = "Parking Garage.wav";
+	var dry, wet;
+	var ratio = 0;
+	var accel = 0;
+
+	function update() {
+		if (updateStarted) return;
+		updateStarted = true;
+
+		var nw = window.innerWidth;
+		var nh = window.innerHeight;
+
+		if ((w != nw) || (h != nh)) {
+			w = nw;
+			h = nh;
+			canvas.style.width = w+'px';
+			canvas.style.height = h+'px';
+			canvas.width = w;
+			canvas.height = h;
+		};
+		
+		var clr = 255; //Math.round(255*(1-ratio)); EDIT 8/26/13 - this was annoying
+		LFO.frequency.value = 10*ratio;
+		set_wet(ratio);
+		ctx.fillStyle = "rgba("+clr+","+clr+","+clr+",1)";
+		ctx.fillRect(0, 0, w, h);
+		
+
+		var i, len = touches.length;
+		for (i=0; i<4; i++) {
+			if (i<len)
+			{
+				var touch = touches[i];
+				var px, py;
+				var step = Math.round(stepCount*touch.clientX/w);	//Quantize
+				px = step*w/stepCount;
+				py = touch.clientY;
+				
+				var freq = root_freq*Math.pow(2,tones[step]/12);
+				if (portamento) {oscillator[i].frequency.value = freq;}	// Glides by default
+				else {oscillator[i].frequency.setValueAtTime(freq, 0);}	// Override glide
+				gain[i].gain.value = 1 - py/h;
+				
+				if (gain[i].gain.value > 1) { gain[i].gain.value = 1; }
+				else if (gain[i].gain.value < 0) { gain[i].gain.value = 0; };
+				
+				ctx.beginPath();
+				ctx.arc(px, py, 40, 0, 2*Math.PI, true);
+
+				ctx.fillStyle = "rgba("+color[i]+", 0.2)";
+				ctx.fill();
+
+				ctx.lineWidth = 2.0;
+				ctx.strokeStyle = "rgba("+color[i]+", 0.8)";
+				ctx.stroke();
+				
+				play(i);
+			}
+			else {
+				stop(i);
+			}
+		};
+
+		updateStarted = false;
+	};
+
+	function ol() {
+		try {
+			canvas = document.getElementById('canvas');
+			ctx = canvas.getContext('2d');
+			timer = setInterval(update, 15);
+
+			canvas.addEventListener('touchend', function() {
+				//ctx.clearRect(0, 0, w, h);
+				//console.log('stop');
+				touches = event.touches;
+			});
+
+			canvas.addEventListener('touchmove', function(event) {
+				event.preventDefault();
+				touches = event.touches;
+				//console.log('move');
+			});
+
+			canvas.addEventListener('touchstart', function(event) {
+				//console.log('start');
+				touches = event.touches;
+				try {
+					for (var i = 0; i < 4; i++)
+					{
+						oscillator[i].noteOn();
+					};
+					LFO.noteOn();
+				}
+				catch(e) {};	// Ignore start errors
+			});
+			
+			if (!('ontouchstart' in window))	// not a touch device-width
+			{
+				canvas.addEventListener('mouseup', function() {
+					touches = [];
+				});
+
+				canvas.addEventListener('mousemove', function(event) {
+					event.preventDefault();
+					if (touches.length > 0)
+					{
+						touches = [event];
+					}
+				});
+
+				canvas.addEventListener('mousedown', function(event) {
+					touches = [event];
+					try {
+						for (var i = 0; i < 4; i++)
+						{
+							oscillator[i].start(0);
+						};
+						LFO.start(0);
+					}
+					catch(e) {};	// Ignore start errors
+				});
+			}
+
+			window.addEventListener('devicemotion', function(event) {
+				accel = Math.abs(event.accelerationIncludingGravity.z);
+				accel -= 1;
+				if (accel > 8.0) accel = 8.0;
+				if (accel < 0) accel = 0;
+				ratio = accel/8.0;
+			});
+		}
+		catch(e) {
+			alert("Canvas setup failure!\n"+e);
+		};
+		
+		try {
+			audio_context = new (AudioContext || webkitAudioContext)();
+			
+			dry = audio_context.createGain();
+			wet = audio_context.createGain();
+			dry.gain.value=.5;
+			wet.gain.value=.5;
+			dry.connect(audio_context.destination);
+			wet.connect(audio_context.destination);
+			/*
+			convolver = audio_context.createConvolver();
+			convolver.connect(wet);
+			
+			var request = new XMLHttpRequest();
+			request.open("GET", "IR/"+impulse, true);
+			request.responseType = "arraybuffer";
+			
+			request.onload = function () {
+				convolver.buffer = audio_context.createBuffer(request.response, false);
+			}
+			request.send();
+			*/
+			/*
+			delay = audio_context.createDelayNode();
+			delay.delayTime.value = .02;
+			delay.connect(wet);
+			//delay.connect(feedback);
+			*/
+			filter = audio_context.createBiquadFilter();
+			filter.type = "lowpass";
+			filter.frequency.value = 2000;
+			filter.Q.value = 4;
+			filter.connect(wet);
+			
+			LFO = audio_context.createOscillator();
+			LFO.type = "sine";
+			LFO.frequency.value = 0;
+
+			LFO_gain = audio_context.createGain();
+			LFO_gain.gain.value = 2000;
+			
+			LFO.connect(LFO_gain);
+			LFO_gain.connect(filter.frequency);
+			//LFO_gain.connect(delay.delayTime);
+			
+			//feedback = audio_context.createGain();
+			//feedback.gain.value = .2;
+			//feedback.connect(filter);
+			//feedback.connect(delay);
+			//wet.connect(feedback);
+			//dry.connect(feedback);
+			
+			set_wet(0);
+			
+			var oTypes = ["sine", "square", "sawtooth", "triangle"];
+			var i;
+			for(i=0; i<4; i++)
+			{
+				oscillator[i] = audio_context.createOscillator();
+				oscillator[i].type = oTypes[i];
+				oscillator[i].frequency.value = root_freq;
+				
+				gain[i] = audio_context.createGain();
+				gain[i].gain.value = 1;
+				
+				gain[i].connect(filter);
+				gain[i].connect(dry);
+			}
+		}
+		catch(e) {
+			alert("Audio setup failure!\nTry using Mobile Safari or Chrome for Android!\n"+e);
+		};
+	};
+	
+	function set_wet(r) {
+		LFO.frequency.value = 2*r;
+		wet.gain.value = Math.sin(r*.5*Math.PI);
+		dry.gain.value = Math.cos(r*.5*Math.PI);
+	};
+
+	function play(i) {
+		try {
+			oscillator[i].connect(gain[i]);
+			(oscillator[i].noteOn && oscillator[i].noteOn(0)) || (oscillator[i].start && oscillator[i].start(0));
+			
+		}
+		catch(e) {
+			//console.log("Play failed!\n"+e);
+		}
+	};
+
+	function stop(i) {
+		oscillator[i].disconnect();
+	};
+	
+	</script>
+  </head>
+  <body onload="ol()">
+	<canvas id="canvas" width="30" height="30" style="top:0px; left:0px; width: 30px; height: 30px;"></canvas>
+  </body>
+</html>
